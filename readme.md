@@ -36,8 +36,9 @@ We are demonstrating that abandoning global namespaces and file‑oriented struc
 "We have stopped teaching computers to work like filing cabinets. We are teaching them to work like a mind."
 
 
----
----
+
+
+
 
 # Capacita OS RUS
 *A Cognitive, Capability-Based Operating System Concept*
