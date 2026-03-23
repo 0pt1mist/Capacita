@@ -39,7 +39,7 @@ We are demonstrating that abandoning global namespaces and file‑oriented struc
 ---
 ---
 
-# Capacita OS РУ
+# Capacita OS RUS
 *A Cognitive, Capability-Based Operating System Concept*
 
 Capacita OS — это экспериментальная архитектура операционной системы, построенная на принципах работы биологического мозга. Мы отбросили 50-летнее наследие UNIX и Windows (файлы, папки, реестры, UID) и создали систему, основанную на нейропластичности, ассоциативной памяти и строгой математической изоляции.
