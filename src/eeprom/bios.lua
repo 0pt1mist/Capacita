@@ -1,6 +1,12 @@
--- Capacita EEPROM BIOS
-local boot_addr = computer.getBootAddress()
+-- Capacita EEPROM BIOS v0.1.1
 local invoke = component.invoke
+
+local eeprom_addr = component.list("eeprom")()
+local boot_addr = invoke(eeprom_addr, "getData")
+
+if not boot_addr or boot_addr == "" then
+  boot_addr = component.list("filesystem")()
+end
 
 local function read_object(uuid)
   local handle = invoke(boot_addr, "open", uuid, "r")
