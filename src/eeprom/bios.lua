@@ -1,12 +1,23 @@
--- Capacita EEPROM BIOS v0.1.1
+-- Capacita EEPROM BIOS v0.1.2 (PoC)
 local invoke = component.invoke
+local list = component.list
 
-local eeprom_addr = component.list("eeprom")()
-local boot_addr = invoke(eeprom_addr, "getData")
+local eeprom = list("eeprom")()
+local saved_addr = invoke(eeprom, "getData")
 
-if not boot_addr or boot_addr == "" then
-  boot_addr = component.list("filesystem")()
+local boot_addr = nil
+for addr in list("filesystem") do
+  if saved_addr and saved_addr ~= "" and addr:sub(1, #saved_addr) == saved_addr then
+    boot_addr = addr
+    break
+  end
 end
+
+if not boot_addr then
+  boot_addr = list("filesystem")()
+end
+
+if not boot_addr then error("BIOS HALT: NO HARD DRIVE FOUND") end
 
 local function read_object(uuid)
   local handle = invoke(boot_addr, "open", uuid, "r")
@@ -21,10 +32,10 @@ local function read_object(uuid)
 end
 
 local index_data = read_object("index.db")
-if not index_data then error("NO INDEX.DB") end
+if not index_data then error("BIOS HALT: INDEX.DB MISSING") end
 
 local kernel_uuid = string.match(index_data, "boot=([%w%-]+)")
-if not kernel_uuid then error("NO BOOTABLE CORE") end
+if not kernel_uuid then error("BIOS HALT: NO KERNEL ENGRAM") end
 
 local kernel_code = read_object(kernel_uuid)
 
@@ -34,7 +45,7 @@ local ObjectStore = {
 
 local safe_hw = {
   invoke = invoke,
-  list = component.list,
+  list = list,
   pull = computer.pullSignal,
   addr = boot_addr
 }

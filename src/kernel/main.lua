@@ -1,11 +1,14 @@
--- Capacita Kernel v0.1
+-- Capacita Kernel v0.1.1
 local hw, store = ...
 
--- TTY
 local gpu = hw.list("gpu")()
 local screen = hw.list("screen")()
-if gpu and screen then hw.invoke(gpu, "bind", screen) end
 
+if not gpu or not screen then
+  while true do hw.pull(1) end
+end
+
+hw.invoke(gpu, "bind", screen)
 local w, h = hw.invoke(gpu, "getResolution")
 local cursor_y = 1
 
