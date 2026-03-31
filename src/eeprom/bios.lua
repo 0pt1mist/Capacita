@@ -1,4 +1,4 @@
--- Capacita EEPROM BIOS v0.1.2 (PoC)
+-- Capacita EEPROM BIOS v0.1.3
 local invoke = component.invoke
 local list = component.list
 
@@ -14,10 +14,8 @@ for addr in list("filesystem") do
 end
 
 if not boot_addr then
-  boot_addr = list("filesystem")()
+  error("BIOS HALT: NO MATCHING HDD. Saved ID: " .. tostring(saved_addr))
 end
-
-if not boot_addr then error("BIOS HALT: NO HARD DRIVE FOUND") end
 
 local function read_object(uuid)
   local handle = invoke(boot_addr, "open", uuid, "r")
@@ -32,17 +30,17 @@ local function read_object(uuid)
 end
 
 local index_data = read_object("index.db")
-if not index_data then error("BIOS HALT: INDEX.DB MISSING") end
+if not index_data then 
+  error("BIOS HALT: INDEX.DB MISSING ON DRIVE " .. string.sub(boot_addr, 1, 8)) 
+end
 
 local kernel_uuid = string.match(index_data, "boot=([%w%-]+)")
-if not kernel_uuid then error("BIOS HALT: NO KERNEL ENGRAM") end
+if not kernel_uuid then error("BIOS HALT: NO KERNEL ENGRAM IN INDEX") end
 
 local kernel_code = read_object(kernel_uuid)
+if not kernel_code then error("BIOS HALT: KERNEL OBJECT READ FAILED") end
 
-local ObjectStore = {
-  read = read_object
-}
-
+local ObjectStore = { read = read_object }
 local safe_hw = {
   invoke = invoke,
   list = list,
