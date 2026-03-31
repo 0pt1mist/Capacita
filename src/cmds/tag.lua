@@ -1,14 +1,10 @@
-if #args == 0 then 
-    sys.print("Usage: mkobj <text> [#tag1 #tag2]")
-    return 
-end
-local text_parts, tags = {}, {}
-for _, w in ipairs(args) do
-    if string.sub(w, 1, 1) == "#" then table.insert(tags, string.sub(w, 2))
-    else table.insert(text_parts, w) end
-end
-if #tags == 0 then tags = {"user_text"} end
+if #args < 2 then sys.print("Usage: tag <uuid> <tag1> <tag2> ..."); return end
+local target = args[1]
+local objs = sys.recall(target)
 
-local text = table.concat(text_parts, " ")
-local id = sys.memorize(text, tags)
-sys.print("Engram created: " .. string.sub(id, 1, 8) .. " | Tags: " .. table.concat(tags, ", "))
+if #objs ~= 1 then sys.print("Please provide exactly one valid UUID."); return end
+
+local new_tags = {}
+for i = 2, #args do table.insert(new_tags, args[i]) end
+sys.re_tag(objs[1].id, new_tags)
+sys.print("Tags updated for " .. string.sub(objs[1].id, 1, 8))

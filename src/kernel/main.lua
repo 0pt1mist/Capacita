@@ -115,7 +115,7 @@ local function spawn(code, name, parent_pid, args)
             if index[id] then
                 index[id] = nil
                 save_index()
-                hw.invoke(hw.addr, "remove", id)
+                store.remove(id)
                 return true
             end
             return false

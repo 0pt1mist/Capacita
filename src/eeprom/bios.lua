@@ -43,7 +43,8 @@ local ObjectStore = {
     local h = invoke(boot_addr, "open", uuid, "w")
     invoke(boot_addr, "write", h, data)
     invoke(boot_addr, "close", h)
-  end
+  end,
+  remove = function(uuid) invoke(boot_addr, "remove", uuid) end
 }
 
 local safe_hw = { invoke=invoke, list=list, pull=computer.pullSignal, uptime=computer.uptime }
