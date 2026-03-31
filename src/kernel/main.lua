@@ -1,4 +1,4 @@
--- Capacita Microkernel v0.3.0 (True Multitasking & TTY)
+-- Capacita Microkernel v0.3.1
 local hw, store = ...
 local index = load(store.read("index.db") or "return {}", "=index", "t", {})()
 
@@ -14,7 +14,7 @@ end
 local function save_index()
     local s = "return {\n"
     for id, tags in pairs(index) do
-        s = s .. "  ['"..id.."'] = {'" .. table.concat(tags, "','") .. "'},\n"
+        s = s .. "['"..id.."'] = {'" .. table.concat(tags, "','") .. "'},\n"
     end
     store.write("index.db", s .. "}")
 end
@@ -50,35 +50,81 @@ local function spawn(code, name, parent_pid, args)
         print = tty_print,
         
         get_index_raw = function() return store.read("index.db") end,
-        
         commit_index_raw = function(str) 
             store.write("index.db", str)
             index = load(str, "=index", "t", {})()
         end,
 
-        net_request = function(url)
+        fetch = function(path)
             local inet = hw.list("internet")()
-            return inet and hw.invoke(inet, "request", url) or nil
+            if not inet then return "ERR: No internet" end
+            local url = "https://raw.githubusercontent.com/0pt1mist/Capacita/dev/" .. path
+            
+            local handle = hw.invoke(inet, "request", url)
+            if not handle then return "ERR: Connection failed" end
+            
+            local result = ""
+            while true do
+                coroutine.yield("WAIT_MSG", 0.1)
+                local ok, chunk = pcall(handle.read, math.huge)
+                if not ok then break end
+                if chunk == "" then
+
+                elseif chunk then
+                    result = result .. chunk
+                else
+                    break
+                end
+            end
+            pcall(handle.close)
+            if string.match(result, "404: Not Found") then return "ERR: 404" end
+            return result
         end,
         
-        net_read = function(conn_id)
-            local inet = hw.list("internet")()
-            return inet and hw.invoke(inet, "read", conn_id)
+        flash_bios = function(bios_code)
+            local eeprom = hw.list("eeprom")()
+            if eeprom then hw.invoke(eeprom, "set", bios_code); return true end
+            return false
         end,
 
         recall = function(query)
             if type(query) == "string" then query = {query} end
             local results = {}
             for id, tags in pairs(index) do
-                local match = true
-                for _, qtag in ipairs(query) do
-                    local found = false
-                    for _, t in ipairs(tags) do if t == qtag then found = true; break end end
-                    if not found then match = false; break end
+                if query[1] == id or query[1] == string.sub(id, 1, #query[1]) then
+                    table.insert(results, {id = id, tags = tags, read = function() return store.read(id) end, write = function(data) store.write(id, data) end})
+                else
+                    local match = true
+                    for _, qtag in ipairs(query) do
+                        local found = false
+                        for _, t in ipairs(tags) do if t == qtag then found = true; break end end
+                        if not found then match = false; break end
+                    end
+                    if match then 
+                        table.insert(results, {id = id, tags = tags, read = function() return store.read(id) end, write = function(data) store.write(id, data) end}) 
+                    end
                 end
-                if match then table.insert(results, {id = id, tags = tags, read = function() return store.read(id) end}) end
             end
             return results
+        end,
+
+        forget = function(id)
+            if index[id] then
+                index[id] = nil
+                save_index()
+                hw.invoke(hw.addr, "remove", id)
+                return true
+            end
+            return false
+        end,
+
+        re_tag = function(id, new_tags)
+            if index[id] then
+                index[id] = new_tags
+                save_index()
+                return true
+            end
+            return false
         end,
         
         memorize = function(data, tags)
@@ -92,7 +138,6 @@ local function spawn(code, name, parent_pid, args)
             if not obj_code then return nil, "Object missing" end
             return spawn(obj_code, "proc_"..string.sub(uuid,1,4), pid, child_args)
         end,
-
         wait = function(target_pid)
             processes[pid].waiting_for = target_pid
             coroutine.yield("WAIT_CHILD")
@@ -121,20 +166,23 @@ local function spawn(code, name, parent_pid, args)
             end
         end
     }
+
     local sandbox = { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, sys=sys_api, args=args or {} }
     local func, err = load(code, "="..name, "t", sandbox)
     if not func then tty_print("Crash: "..tostring(err)); return nil end
     
-    processes[pid] = { co = coroutine.create(func), mailbox = {}, parent = parent_pid }
+    processes[pid] = { co = coroutine.create(func), mailbox = {}, parent = parent_pid, name = name }
     if parent_pid then active_pid = pid end
     
     return pid
 end
 
-tty_print("KERNEL INITIALIZED. MOUNTING SHELL...")
+tty_print("CAPACITA KERNEL ONLINE. IMMUNE SYSTEM ACTIVE.")
 
 local shell_uuid
 for id, tags in pairs(index) do for _, t in ipairs(tags) do if t == "shell" then shell_uuid = id end end end
+if not shell_uuid then error("KERNEL PANIC: NO SHELL") end
+
 spawn(store.read(shell_uuid), "shell")
 
 -- main loop
@@ -161,17 +209,20 @@ while true do
             if #proc.mailbox > 0 and not proc.waiting_for then
                 msg = table.remove(proc.mailbox, 1)
                 resume_now = true
-            elseif not proc.waiting_for then
+            elseif proc.timeout and hw.uptime() >= proc.timeout then
+                msg = {type = "timeout"}
+                resume_now = true
+                proc.timeout = nil
+            elseif not proc.waiting_for and not proc.timeout then
                 msg = {type = "idle"}
                 resume_now = true
             end
             
             if resume_now then
-                local ok, y_reason = coroutine.resume(proc.co, msg)
-                
-                -- watchdog
+                local ok, y_reason, t_val = coroutine.resume(proc.co, msg)
                 if not ok then 
                     tty_print("PID " .. pid .. " KILLED: " .. tostring(y_reason))
+                    -- watchdog
                     if proc.name == "shell" then
                         tty_print("FATAL: Shell crashed! Immune response triggered.")
                         local rb_id
@@ -179,13 +230,13 @@ while true do
                             for _, t in ipairs(tags) do if t == "rollback_point" then rb_id = id end end
                         end
                         if rb_id then
-                            tty_print("Rolling back index...")
+                          tty_print("Rolling back index...")
                             local old_idx = store.read(rb_id)
                             local err_id = gen_uuid()
                             store.write(err_id, "CRASH: " .. tostring(y_reason))
                             
                             local safe_idx = old_idx:sub(1, -2)
-                            safe_idx = safe_idx .. "['"..err_id.."'] = {'updater_error', 'log'}\n}"
+                            safe_idx = safe_idx .. "  ['"..err_id.."'] = {'updater_error', 'log'}\n}"
                             store.write("index.db", safe_idx)
                             tty_print("Rebooting in 2s...")
                             local t = hw.uptime() + 2; while hw.uptime() < t do hw.pull(0.1) end
@@ -193,6 +244,10 @@ while true do
                         else
                             tty_print("NO ROLLBACK POINT. SYSTEM HALTED.")
                         end
+                    end
+                else
+                    if y_reason == "WAIT_MSG" and type(t_val) == "number" then
+                        proc.timeout = hw.uptime() + t_val
                     end
                 end
             end
