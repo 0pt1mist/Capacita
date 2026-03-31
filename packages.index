@@ -12,5 +12,5 @@ return {
     rollback={ path = "src/cmds/rollback.lua", tags = {"cmd", "rollback"} },
     errors = { path = "src/cmds/errors.lua",   tags = {"cmd", "errors"} },
     bench  = { path = "src/cmds/bench.lua",    tags = {"cmd", "bench"} },
-    find = { path = "src/cmds/find.lua", tags = {"cmd", "find"} }
+    find   = { path = "src/cmds/find.lua",     tags = {"cmd", "find"} }
 }

@@ -63,16 +63,21 @@ local function spawn(code, name, parent_pid, args)
             local handle, err = hw.invoke(inet, "request", url)
             if not handle then return "ERR: " .. tostring(err) end
             
+            while true do
+                local ok, res = pcall(function() return handle.finishConnect() end)
+                if not ok then return "ERR: Connect crashed" end
+                if res == true then break end
+                if res == nil then return "ERR: Connect failed" end
+                coroutine.yield("WAIT_MSG", 0.05)
+            end
+            
             local result = ""
             while true do
                 coroutine.yield("WAIT_MSG", 0.05)
-                local ok, chunk = pcall(function()
-                    handle:finishConnect()
-                    return handle:read(math.huge)
-                end)
+                local ok, chunk = pcall(function() return handle.read(math.huge) end)
                 
                 if not ok then 
-                    pcall(function() handle:close() end)
+                    pcall(function() handle.close() end)
                     return "ERR: Read failed" 
                 end
                 
@@ -80,7 +85,8 @@ local function spawn(code, name, parent_pid, args)
                 elseif chunk then result = result .. chunk
                 else break end
             end
-            pcall(function() handle:close() end)
+            
+            pcall(function() handle.close() end)
             if string.match(result, "404: Not Found") then return "ERR: 404" end
             return result
         end,
