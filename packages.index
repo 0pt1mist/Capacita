@@ -1,0 +1,15 @@
+return {
+    bios   = { path = "src/eeprom/bios.lua",   tags = {"boot", "bios"} },
+    kernel = { path = "src/kernel/main.lua",   tags = {"boot", "kernel"} },
+    shell  = { path = "src/system/shell.lua",  tags = {"system", "shell"} },
+    help   = { path = "src/cmds/help.lua",     tags = {"cmd", "help"} },
+    echo   = { path = "src/cmds/echo.lua",     tags = {"cmd", "echo"} },
+    mkobj  = { path = "src/cmds/mkobj.lua",    tags = {"cmd", "mkobj"} },
+    rm     = { path = "src/cmds/rm.lua",       tags = {"cmd", "rm"} },
+    tag    = { path = "src/cmds/tag.lua",      tags = {"cmd", "tag"} },
+    nano   = { path = "src/cmds/nano.lua",     tags = {"cmd", "nano"} },
+    update = { path = "src/cmds/update.lua",   tags = {"cmd", "update"} },
+    rollback={ path = "src/cmds/rollback.lua", tags = {"cmd", "rollback"} },
+    errors = { path = "src/cmds/errors.lua",   tags = {"cmd", "errors"} },
+    bench  = { path = "src/cmds/bench.lua",    tags = {"cmd", "bench"} }
+}

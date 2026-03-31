@@ -1,109 +1,84 @@
-sys.print("--- Capacita Updater ---")
-
-local targets = {}
-if #args == 0 or args[1] == "all" then
-    targets = {kernel=true, shell=true, cmds=true, bios=true}
-    sys.print("Target: ALL components")
-else
-    local joined = table.concat(args, ",")
-    for t in string.gmatch(joined, "[^,%s]+") do
-        targets[t] = true
-    end
-    sys.print("Target: " .. joined)
-end
-
-local updates = {}
-
-if targets.bios then
-    sys.print("Fetching BIOS...")
-    local code = sys.fetch("src/eeprom/bios.lua")
-    if code:sub(1,3) == "ERR" then sys.print("Failed!"); return end
-    updates.bios = code
-end
-
-if targets.kernel then
-    sys.print("Fetching Kernel...")
-    local code = sys.fetch("src/kernel/main.lua")
-    if code:sub(1,3) == "ERR" then sys.print("Failed!"); return end
-    updates.kernel = code
-end
-
-if targets.shell then
-    sys.print("Fetching Shell...")
-    local code = sys.fetch("src/system/shell.lua")
-    if code:sub(1,3) == "ERR" then sys.print("Failed!"); return end
-    updates.shell = code
-end
-
-if targets.cmds then
-    updates.cmds = {}
-    local cmd_list = {"help", "echo", "mkobj", "update", "rollback", "errors"}
-    for _, c in ipairs(cmd_list) do
-        sys.print("Fetching cmd: " .. c)
-        local code = sys.fetch("src/cmds/" .. c .. ".lua")
-        if code:sub(1,3) == "ERR" then sys.print("Failed: " .. c); return end
-        updates.cmds[c] = code
-    end
-end
-
-local count = 0
-for _ in pairs(updates) do count = count + 1 end
-if count == 0 then
-    sys.print("Nothing to update.")
+if #args == 0 then
+    sys.print("Usage: update <all | pkg1,pkg2>")
     return
 end
 
+sys.print("Syncing packages.index...")
+local idx_str = sys.fetch("packages.index")
+if string.sub(idx_str, 1, 3) == "ERR" then
+    sys.print("Sync failed: " .. idx_str)
+    return
+end
+
+local pkg_db = load(idx_str, "=pkg", "t", {})()
+
+local targets = {}
+if args[1] == "all" then
+    for k, _ in pairs(pkg_db) do targets[k] = true end
+else
+    local joined = table.concat(args, "")
+    for w in string.gmatch(joined, "[^,]+") do
+        if pkg_db[w] then targets[w] = true else sys.print("Unknown package: " .. w) end
+    end
+end
+
+local updates = {}
+local count = 0
+for k, _ in pairs(targets) do
+    sys.print("Fetching " .. k .. "...")
+    local code = sys.fetch(pkg_db[k].path)
+    if string.sub(code, 1, 3) == "ERR" then
+        sys.print("Failed to fetch " .. k .. ": " .. code)
+    else
+        updates[k] = code
+        count = count + 1
+    end
+end
+
+if count == 0 then sys.print("Nothing to update."); return end
 sys.print("Applying updates...")
 
 if updates.bios then
-    sys.print("Flashing EEPROM...")
     sys.flash_bios(updates.bios)
+    updates.bios = nil
 end
 
-if updates.kernel or updates.shell or updates.cmds then
-    local raw_idx = sys.get_index_raw()
-    local idx = load(raw_idx, "=idx", "t", {})()
+local raw_idx = sys.get_index_raw()
+local idx = load(raw_idx, "=idx", "t", {})()
+
+local rb_id = sys.memorize(raw_idx, {"system", "rollback_point"})
+idx[rb_id] = {"system", "rollback_point"}
+
+local needs_reboot = false
+
+for pkg_name, code in pairs(updates) do
+    local p_tags = pkg_db[pkg_name].tags
     
-    local rb_id = sys.memorize(raw_idx, {"system", "rollback_point"})
-    idx[rb_id] = {"system", "rollback_point"}
-    
-    if updates.kernel then
-        for id, tags in pairs(idx) do
-            for i, t in ipairs(tags) do if t == "kernel" then tags[i] = "old_kernel" end end
+    for id, e_tags in pairs(idx) do
+        local overlap = false
+        for _, t in ipairs(e_tags) do
+            for _, pt in ipairs(p_tags) do if t == pt then overlap = true end end
         end
-        local id = sys.memorize(updates.kernel, {"boot", "kernel"})
-        idx[id] = {"boot", "kernel"}
-    end
-    
-    if updates.shell then
-        for id, tags in pairs(idx) do
-            for i, t in ipairs(tags) do if t == "shell" then tags[i] = "old_shell" end end
-        end
-        local id = sys.memorize(updates.shell, {"system", "shell"})
-        idx[id] = {"system", "shell"}
-    end
-    
-    if updates.cmds then
-        for id, tags in pairs(idx) do
-            for i, t in ipairs(tags) do if t == "cmd" then tags[i] = "old_cmd" end end
-        end
-        for c, code in pairs(updates.cmds) do
-            local id = sys.memorize(code, {"cmd", c})
-            idx[id] = {"cmd", c}
+        if overlap then
+            for i, t in ipairs(e_tags) do e_tags[i] = "old_" .. t end
         end
     end
     
-    local function serialize_index(i_tbl)
-        local s = "return {\n"
-        for id, tags in pairs(i_tbl) do
-            s = s .. "  ['"..id.."'] = {'" .. table.concat(tags, "','") .. "'},\n"
-        end
-        return s .. "}"
-    end
+    local new_id = sys.memorize(code, p_tags)
+    idx[new_id] = p_tags
     
-    sys.commit_index_raw(serialize_index(idx))
+    if pkg_name == "kernel" or pkg_name == "shell" then needs_reboot = true end
 end
 
-sys.print("Update complete! Rebooting...")
-local t = sys.uptime() + 2; while sys.uptime() < t do sys.receive(0.1) end
-sys.reboot()
+local s = "return {\n"
+for id, tags in pairs(idx) do
+    s = s .. "  ['"..id.."'] = {'" .. table.concat(tags, "','") .. "'},\n"
+end
+sys.commit_index_raw(s .. "}")
+
+sys.print("Successfully updated " .. count .. " components.")
+if needs_reboot then
+    sys.print("Core components updated. Rebooting...")
+    local t = sys.uptime() + 2; while sys.uptime() < t do sys.receive(0.1) end
+    sys.reboot()
+end

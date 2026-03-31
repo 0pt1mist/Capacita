@@ -1,4 +1,4 @@
--- Capacita Microkernel v0.3.1
+-- Capacita Microkernel v0.4.0
 local hw, store = ...
 local index = load(store.read("index.db") or "return {}", "=index", "t", {})()
 
@@ -60,30 +60,34 @@ local function spawn(code, name, parent_pid, args)
             if not inet then return "ERR: No internet" end
             local url = "https://raw.githubusercontent.com/0pt1mist/Capacita/dev/" .. path
             
-            local handle = hw.invoke(inet, "request", url)
-            if not handle then return "ERR: Connection failed" end
+            local handle, err = hw.invoke(inet, "request", url)
+            if not handle then return "ERR: " .. tostring(err) end
             
             local result = ""
             while true do
-                coroutine.yield("WAIT_MSG", 0.1)
-                local ok, chunk = pcall(handle.read, math.huge)
-                if not ok then break end
-                if chunk == "" then
-
-                elseif chunk then
-                    result = result .. chunk
-                else
-                    break
+                coroutine.yield("WAIT_MSG", 0.05)
+                local ok, chunk = pcall(function()
+                    handle:finishConnect()
+                    return handle:read(math.huge)
+                end)
+                
+                if not ok then 
+                    pcall(function() handle:close() end)
+                    return "ERR: Read failed" 
                 end
+                
+                if chunk == "" then
+                elseif chunk then result = result .. chunk
+                else break end
             end
-            pcall(handle.close)
+            pcall(function() handle:close() end)
             if string.match(result, "404: Not Found") then return "ERR: 404" end
             return result
         end,
-        
-        flash_bios = function(bios_code)
+
+        flash_bios = function(code)
             local eeprom = hw.list("eeprom")()
-            if eeprom then hw.invoke(eeprom, "set", bios_code); return true end
+            if eeprom then hw.invoke(eeprom, "set", code); return true end
             return false
         end,
 
@@ -91,18 +95,17 @@ local function spawn(code, name, parent_pid, args)
             if type(query) == "string" then query = {query} end
             local results = {}
             for id, tags in pairs(index) do
-                if query[1] == id or query[1] == string.sub(id, 1, #query[1]) then
-                    table.insert(results, {id = id, tags = tags, read = function() return store.read(id) end, write = function(data) store.write(id, data) end})
-                else
-                    local match = true
+                local is_uuid = (query[1] == id or string.sub(id, 1, #query[1]) == query[1])
+                local match = true
+                if not is_uuid then
                     for _, qtag in ipairs(query) do
                         local found = false
                         for _, t in ipairs(tags) do if t == qtag then found = true; break end end
                         if not found then match = false; break end
                     end
-                    if match then 
-                        table.insert(results, {id = id, tags = tags, read = function() return store.read(id) end, write = function(data) store.write(id, data) end}) 
-                    end
+                end
+                if is_uuid or match then 
+                    table.insert(results, {id = id, tags = tags, read = function() return store.read(id) end, write = function(data) store.write(id, data) end}) 
                 end
             end
             return results

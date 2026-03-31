@@ -1,10 +1,9 @@
--- Capacita Installer v0.4.0
+-- Capacita Installer v0.5.0
 local component = require("component")
 local internet = require("internet")
 local fs = require("filesystem")
 
 local REPO_URL = "https://raw.githubusercontent.com/0pt1mist/Capacita/dev/"
-
 local function uuid()
     local t ='xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
     return string.gsub(t, '[xy]', function (c)
@@ -15,9 +14,7 @@ end
 
 local target_addr
 for addr in component.list("filesystem") do
-  if addr ~= fs.get("/").address and addr ~= component.eeprom.address then
-     if not fs.get("/tmp") or addr ~= fs.get("/tmp").address then target_addr = addr; break end
-  end
+  if addr ~= fs.get("/").address and addr ~= component.eeprom.address and (not fs.get("/tmp") or addr ~= fs.get("/tmp").address) then target_addr = addr; break end
 end
 if not target_addr then error("No target drive found!") end
 
@@ -28,8 +25,12 @@ local function download(path)
   return d
 end
 
-local bios_code = download("src/eeprom/bios.lua")
-component.eeprom.set(bios_code)
+print("Fetching packages.index...")
+local pkg_str = download("packages.index")
+local pkg_db = load(pkg_str)()
+
+print("Flashing BIOS...")
+component.eeprom.set(download(pkg_db.bios.path))
 component.eeprom.setData(target_addr)
 
 local mnt = "/mnt/capacita"
@@ -37,34 +38,18 @@ fs.makeDirectory(mnt)
 fs.mount(target_addr, mnt)
 for file in fs.list(mnt) do fs.remove(mnt .. "/" .. file) end
 
-local function write_obj(id, data)
-  local f = io.open(mnt .. "/" .. id, "w")
-  f:write(data); f:close()
-end
-
 local index_str = "return {\n"
-
-local function install_obj(path, tags)
-    local code = download(path)
-    local id = uuid()
-    write_obj(id, code)
-    index_str = index_str .. "  ['"..id.."'] = {'" .. table.concat(tags, "','") .. "'},\n"
+for pkg_name, info in pairs(pkg_db) do
+    if pkg_name ~= "bios" then
+        print("Installing " .. pkg_name .. "...")
+        local code = download(info.path)
+        local id = uuid()
+        local f = io.open(mnt .. "/" .. id, "w"); f:write(code); f:close()
+        index_str = index_str .. "  ['"..id.."'] = {'" .. table.concat(info.tags, "','") .. "'},\n"
+    end
 end
 
-print("Installing Core...")
-install_obj("src/kernel/main.lua", {"boot", "kernel"})
-install_obj("src/system/shell.lua", {"system", "shell"})
-
-print("Installing Commands...")
-
-local cmds = {"help", "echo", "mkobj", "update", "rollback", "errors"} 
-
-for _, cmd in ipairs(cmds) do
-    install_obj("src/cmds/" .. cmd .. ".lua", {"cmd", cmd})
-end
-
-index_str = index_str .. "}"
-write_obj("index.db", index_str)
+local f = io.open(mnt .. "/index.db", "w"); f:write(index_str .. "}"); f:close()
 fs.umount(mnt)
 
 print("INSTALLATION COMPLETE. Rebooting...")
