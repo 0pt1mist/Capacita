@@ -3,6 +3,7 @@ sys.print("---------------------------------")
 sys.print("CAPACITA SHELL")
 sys.print("---------------------------------")
 
+error("DED")
 while true do
     local input = sys.readln("> ")
     
