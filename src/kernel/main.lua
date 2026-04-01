@@ -48,6 +48,13 @@ local function spawn(code, name, parent_pid, args)
         uptime = hw.uptime,
         reboot = function() hw.computer.shutdown(true) end,
         print = tty_print,
+
+        clear = function() 
+            if gpu then hw.invoke(gpu, "fill", 1, 1, w, h, " ") end
+            cy = 1 
+        end,
+        get_cy = function() return cy end,
+        set_cy = function(y) cy = y end,
         
         get_index_raw = function() return store.read("index.db") end,
         commit_index_raw = function(str) 

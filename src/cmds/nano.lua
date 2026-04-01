@@ -21,9 +21,7 @@ elseif #objs == 1 then
     local content = objs[1].read()
     if content and content ~= "" then
         lines = {}
-        for line in string.gmatch(content.."\n", "([^\n]*)\n") do
-            table.insert(lines, line)
-        end
+        for line in string.gmatch(content.."\n", "([^\n]*)\n") do table.insert(lines, line) end
     end
 else
     is_new = true
@@ -33,14 +31,16 @@ if #lines == 0 then lines = {""} end
 
 local function draw()
     local title = is_new and (" Nano:[New Object] " .. target) or (" Nano: " .. string.sub(obj_id, 1, 8))
+    
     sys.video.fill(1, 1, w, 1, " ")
     sys.video.set(1, 1, title)
     
-    sys.video.fill(1, 2, w, h-2, " ")
     for i = 1, h-2 do
         local lineIdx = scrollY + i
         if lines[lineIdx] then
-            sys.video.set(1, i+1, unicode.sub(lines[lineIdx], 1, w))
+            sys.video.set(1, i+1, unicode.sub(lines[lineIdx], 1, w) .. "      ")
+        else
+            sys.video.fill(1, i+1, w, 1, " ")
         end
     end
     
@@ -59,6 +59,7 @@ local function save()
     if is_new then
         obj_id = sys.memorize(data, {"user_text", target})
         is_new = false
+        objs = sys.recall(obj_id)
     else
         objs[1].write(data) 
     end
@@ -76,7 +77,7 @@ while true do
         if char == 19 then
             save()
         elseif char == 24 then
-            sys.video.fill(1, 1, w, h, " ")
+            sys.clear()
             return
         elseif code == 28 then
             local line = lines[scrollY + cursorY]
@@ -86,18 +87,22 @@ while true do
             table.insert(lines, scrollY + cursorY + 1, p2)
             cursorY = cursorY + 1
             cursorX = 1
+            if cursorY > h - 2 then
+                cursorY = cursorY - 1
+                scrollY = scrollY + 1
+            end
         elseif code == 14 then
             if cursorX > 1 then
                 local line = lines[scrollY + cursorY]
                 lines[scrollY + cursorY] = unicode.sub(line, 1, cursorX - 2) .. unicode.sub(line, cursorX)
                 cursorX = cursorX - 1
-            elseif cursorY > 1 then
+            elseif cursorY > 1 or scrollY > 0 then
                 local current = lines[scrollY + cursorY]
-                local prev = lines[scrollY + cursorY - 1]
+                if cursorY > 1 then cursorY = cursorY - 1 else scrollY = scrollY - 1 end
+                local prev = lines[scrollY + cursorY]
                 cursorX = unicode.len(prev) + 1
-                lines[scrollY + cursorY - 1] = prev .. current
-                table.remove(lines, scrollY + cursorY)
-                cursorY = cursorY - 1
+                lines[scrollY + cursorY] = prev .. current
+                table.remove(lines, scrollY + cursorY + 1)
             end
         elseif code == 200 then
             if cursorY > 1 then cursorY = cursorY - 1 elseif scrollY > 0 then scrollY = scrollY - 1 end

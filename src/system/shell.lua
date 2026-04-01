@@ -1,27 +1,21 @@
--- Capacita Shell v0.5.0
-sys.video.bind()
+-- Capacita Shell v0.6.0
+sys.clear()
+
 local w, h = sys.video.res()
-sys.video.fill(1, 1, w, h, " ")
-
-local cy = 1
 local history = {}
-
-local function scroll()
-    sys.video.fill(1, 1, w, h, " ")
-    cy = 1
-end
-
-local function tty_print(txt)
-    sys.video.set(1, cy, tostring(txt) .. "                               ")
-    cy = cy + 1
-    if cy > h then scroll() end
-end
 
 local function readln(prompt)
     local buf = ""
     local pos = 1
     local blink = true
     local hist_idx = #history + 1
+    
+    local cy = sys.get_cy()
+    if cy > h then 
+        sys.print("")
+        cy = sys.get_cy() - 1
+        sys.set_cy(cy)
+    end
     
     local function redraw()
         local p1 = unicode.sub(buf, 1, pos - 1)
@@ -43,20 +37,20 @@ local function readln(prompt)
             
             if code == 28 then
                 sys.video.set(1, cy, prompt .. buf .. "       ")
-                cy = cy + 1
-                if cy > h then scroll() end
+                sys.set_cy(cy)
+                sys.print("") 
                 if buf ~= "" then table.insert(history, buf) end
                 return buf
-            
-            elseif code == 14 and pos > 1 then 
+                
+            elseif code == 14 and pos > 1 then
                 buf = unicode.sub(buf, 1, pos - 2) .. unicode.sub(buf, pos)
                 pos = pos - 1
-            
+                
             elseif code == 203 and pos > 1 then
                 pos = pos - 1
             elseif code == 205 and pos <= unicode.len(buf) then
                 pos = pos + 1
-            
+                
             elseif code == 200 then
                 if hist_idx > 1 then
                     hist_idx = hist_idx - 1
@@ -80,9 +74,9 @@ local function readln(prompt)
     end
 end
 
-tty_print("---------------------------------")
-tty_print("CAPACITA SHELL v0.5")
-tty_print("---------------------------------")
+sys.print("---------------------------------")
+sys.print("CAPACITA SHELL v0.6")
+sys.print("---------------------------------")
 
 while true do
     local input = readln("> ")
@@ -95,7 +89,7 @@ while true do
         
         local objs = sys.recall({"cmd", cmd_name})
         if #objs == 0 then
-            tty_print("Command not found: " .. cmd_name)
+            sys.print("Command not found: " .. cmd_name)
         else
             local pid = sys.spawn(objs[1].id, args)
             if pid then sys.wait(pid) end
