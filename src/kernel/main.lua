@@ -46,7 +46,7 @@ local function spawn(code, name, parent_pid, args)
     
     local sys_api = {
         uptime = hw.uptime,
-        reboot = function() hw.computer.shutdown(true) end,
+        reboot = function() computer.shutdown(true) end,
         print = tty_print,
         
         clear = function() 
@@ -253,7 +253,7 @@ while true do
                             store.write("index.db", safe_idx)
                             tty_print("Rebooting in 2s...")
                             local t = hw.uptime() + 2; while hw.uptime() < t do hw.pull(0.1) end
-                            hw.computer.shutdown(true)
+                            computer.shutdown(true)
                         else
                             tty_print("NO ROLLBACK POINT. SYSTEM HALTED.")
                         end
