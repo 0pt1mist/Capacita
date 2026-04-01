@@ -1,7 +1,7 @@
 -- Capacita Microkernel v0.5.0
+local unicode = require("unicode")
 local hw, store = ...
 local index = load(store.read("index.db") or "return {}", "=index", "t", {})()
-local unicode = require("unicode")
 
 local function gen_uuid()
     math.randomseed(math.floor(hw.uptime() * 1000))
