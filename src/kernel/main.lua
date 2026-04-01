@@ -1,5 +1,4 @@
--- Capacita Microkernel v0.5.0
-local unicode = require("unicode")
+-- Capacita Microkernel v0.6.0
 local hw, store = ...
 local index = load(store.read("index.db") or "return {}", "=index", "t", {})()
 
@@ -15,7 +14,7 @@ end
 local function save_index()
     local s = "return {\n"
     for id, tags in pairs(index) do
-        s = s .. "['"..id.."'] = {'" .. table.concat(tags, "','") .. "'},\n"
+        s = s .. "  ['"..id.."'] = {'" .. table.concat(tags, "','") .. "'},\n"
     end
     store.write("index.db", s .. "}")
 end
@@ -112,7 +111,12 @@ local function spawn(code, name, parent_pid, args)
                     end
                 end
                 if is_uuid or match then 
-                    table.insert(results, {id = id, tags = tags, read = function() return store.read(id) end, write = function(data) store.write(id, data) end}) 
+                    table.insert(results, {
+                        id = id, 
+                        tags = tags, 
+                        read = function() return store.read(id) end, 
+                        write = function(data) store.write(id, data) end
+                    }) 
                 end
             end
             return results
@@ -148,36 +152,35 @@ local function spawn(code, name, parent_pid, args)
             if not obj_code then return nil, "Object missing" end
             return spawn(obj_code, "proc_"..string.sub(uuid,1,4), pid, child_args)
         end,
+        
         wait = function(target_pid)
             processes[pid].waiting_for = target_pid
             coroutine.yield("WAIT_CHILD")
         end,
 
         receive = function(timeout) return coroutine.yield("WAIT_MSG", timeout) end,
-
-        readln = function(prompt)
-            prompt = prompt or ""
-            local buf = ""
-            local function redraw() hw.invoke(gpu, "set", 1, cy, prompt .. buf .. "_       ") end
-            redraw()
-            while true do
-                local msg = coroutine.yield("WAIT_MSG")
-                if msg.type == "hw" and msg.data[1] == "key_down" then
-                    local char, code = msg.data[3], msg.data[4]
-                    if code == 28 then 
-                        tty_print(prompt .. buf)
-                        return buf
-                    elseif code == 14 and #buf > 0 then 
-                        buf = string.sub(buf, 1, -2); redraw()
-                    elseif char >= 32 and char <= 126 then
-                        buf = buf .. string.char(char); redraw()
-                    end
-                end
-            end
-        end
+        
+        video = {
+            bind = function() if gpu and screen then hw.invoke(gpu, "bind", screen) end end,
+            set = function(x, y, txt) if gpu then hw.invoke(gpu, "set", x, y, txt) end end,
+            fill = function(x, y, w, h, ch) if gpu then hw.invoke(gpu, "fill", x, y, w, h, ch) end end,
+            res = function() if gpu then return hw.invoke(gpu, "getResolution") else return 80, 25 end end
+        }
     }
 
-    local sandbox = { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, load=load, unicode=unicode, sys=sys_api, args=args or {} }
+    local safe_sys = setmetatable({}, {
+        __index = sys_api,
+        __newindex = function() error("SECURITY FAULT: Kernel API is read-only!") end,
+        __metatable = false
+    })
+
+    local sandbox = { 
+        string=string, table=table, math=math, tostring=tostring, 
+        tonumber=tonumber, ipairs=ipairs, pairs=pairs, 
+        load=load, unicode=unicode, 
+        sys=safe_sys, args=args or {} 
+    }
+    
     local func, err = load(code, "="..name, "t", sandbox)
     if not func then tty_print("Crash: "..tostring(err)); return nil end
     
@@ -240,7 +243,7 @@ while true do
                             for _, t in ipairs(tags) do if t == "rollback_point" then rb_id = id end end
                         end
                         if rb_id then
-                          tty_print("Rolling back index...")
+                            tty_print("Rolling back index...")
                             local old_idx = store.read(rb_id)
                             local err_id = gen_uuid()
                             store.write(err_id, "CRASH: " .. tostring(y_reason))
