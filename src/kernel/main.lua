@@ -1,4 +1,4 @@
--- Capacita Microkernel v0.6.0
+-- Capacita Microkernel v0.6.1
 local hw, store = ...
 local index = load(store.read("index.db") or "return {}", "=index", "t", {})()
 
@@ -48,7 +48,7 @@ local function spawn(code, name, parent_pid, args)
         uptime = hw.uptime,
         reboot = function() hw.computer.shutdown(true) end,
         print = tty_print,
-
+        
         clear = function() 
             if gpu then hw.invoke(gpu, "fill", 1, 1, w, h, " ") end
             cy = 1 
@@ -81,7 +81,7 @@ local function spawn(code, name, parent_pid, args)
             local result = ""
             while true do
                 coroutine.yield("WAIT_MSG", 0.05)
-                local ok, chunk = pcall(function() return handle.read(math.huge) end)
+                local ok, chunk = pcall(function() return handle.read(4096) end)
                 
                 if not ok then 
                     pcall(function() handle.close() end)
@@ -118,12 +118,7 @@ local function spawn(code, name, parent_pid, args)
                     end
                 end
                 if is_uuid or match then 
-                    table.insert(results, {
-                        id = id, 
-                        tags = tags, 
-                        read = function() return store.read(id) end, 
-                        write = function(data) store.write(id, data) end
-                    }) 
+                    table.insert(results, {id = id, tags = tags, read = function() return store.read(id) end, write = function(data) store.write(id, data) end}) 
                 end
             end
             return results
@@ -205,7 +200,6 @@ if not shell_uuid then error("KERNEL PANIC: NO SHELL") end
 
 spawn(store.read(shell_uuid), "shell")
 
--- main loop
 while true do
     local e = {hw.pull(0.05)}
     if e[1] and processes[active_pid] then
@@ -242,7 +236,6 @@ while true do
                 local ok, y_reason, t_val = coroutine.resume(proc.co, msg)
                 if not ok then 
                     tty_print("PID " .. pid .. " KILLED: " .. tostring(y_reason))
-                    -- watchdog
                     if proc.name == "shell" then
                         tty_print("FATAL: Shell crashed! Immune response triggered.")
                         local rb_id
