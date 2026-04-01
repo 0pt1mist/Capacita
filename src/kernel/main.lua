@@ -1,6 +1,7 @@
--- Capacita Microkernel v0.4.0
+-- Capacita Microkernel v0.5.0
 local hw, store = ...
 local index = load(store.read("index.db") or "return {}", "=index", "t", {})()
+local unicode = require("unicode")
 
 local function gen_uuid()
     math.randomseed(math.floor(hw.uptime() * 1000))
@@ -176,7 +177,7 @@ local function spawn(code, name, parent_pid, args)
         end
     }
 
-    local sandbox = { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, sys=sys_api, args=args or {} }
+    local sandbox = { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, load=load, unicode=unicode, sys=sys_api, args=args or {} }
     local func, err = load(code, "="..name, "t", sandbox)
     if not func then tty_print("Crash: "..tostring(err)); return nil end
     
