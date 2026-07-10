@@ -1,17 +1,12 @@
--- Capacita Microkernel v1.0.0
+-- Capacita Microkernel v1.1.0 (Strict Capability Delegation)
 local hw, boot_drive, db = ...
 local index, bitmap = db.index, db.bitmap
 
-local markov = {}
-local ram_cache = {}
-local cache_order = {}
+local markov, ram_cache, cache_order = {}, {}, {}
 local CACHE_MAX = 5
 local last_accessed_uuid = nil
 local index_dirty = false
-
-local processes = {}
-local pid_counter = 1
-local active_pid = 1
+local processes, pid_counter, active_pid = {}, 1, 1
 
 local gpu, screen = hw.list("gpu")(), hw.list("screen")()
 if gpu and screen then hw.invoke(gpu, "bind", screen) end
@@ -22,14 +17,9 @@ local function tty_print(txt)
     if not gpu then return end
     hw.invoke(gpu, "set", 1, cy, tostring(txt))
     cy = cy + 1
-    if cy > h then
-        hw.invoke(gpu, "copy", 1, 2, w, h - 1, 0, -1)
-        hw.invoke(gpu, "fill", 1, h, w, 1, " ")
-        cy = h
-    end
+    if cy > h then hw.invoke(gpu, "copy", 1, 2, w, h - 1, 0, -1); hw.invoke(gpu, "fill", 1, h, w, 1, " "); cy = h end
 end
 
--- СТОЛП 1 & 3: RAW SECTORS + PLASTICITY
 local function serialize(v)
     if type(v) == "number" or type(v) == "boolean" then return tostring(v)
     elseif type(v) == "string" then return string.format("%q", v)
@@ -45,11 +35,7 @@ local function alloc_sectors(size)
     local allocated = {}
     local total_sectors = math.floor((hw.invoke(boot_drive, "getCapacity") or 1048576) / 512)
     for i = 129, total_sectors do
-        if not bitmap[i] then
-            bitmap[i] = true
-            table.insert(allocated, i)
-            if #allocated == count then return allocated end
-        end
+        if not bitmap[i] then bitmap[i] = true; table.insert(allocated, i); if #allocated == count then return allocated end end
     end
     error("Out of disk space")
 end
@@ -58,19 +44,16 @@ local function read_obj_raw(uuid)
     if ram_cache[uuid] then return ram_cache[uuid] end
     local meta = index[uuid]
     if not meta then return nil end
-    
     local b = ""
     for _, sec in ipairs(meta.sectors) do b = b .. hw.invoke(boot_drive, "readSector", sec) end
     local data = b:sub(1, meta.size)
 
-    -- Столп 3: Predictive Plasticity (Markov update)
     if last_accessed_uuid and last_accessed_uuid ~= uuid then
         markov[last_accessed_uuid] = markov[last_accessed_uuid] or {}
         markov[last_accessed_uuid][uuid] = (markov[last_accessed_uuid][uuid] or 0) + 1.0
     end
     last_accessed_uuid = uuid
 
-    -- Prefetch
     if markov[uuid] then
         local best_next, best_w = nil, 0
         for n, w in pairs(markov[uuid]) do if w > best_w then best_next=n; best_w=w end end
@@ -91,56 +74,57 @@ end
 local function write_obj_raw(uuid, data)
     local meta = index[uuid]
     if meta then for _, s in ipairs(meta.sectors) do bitmap[s] = false end end
-    
     local secs = alloc_sectors(#data)
     index[uuid] = { tags = meta and meta.tags or {}, sectors = secs, size = #data }
-    
     local padded = data .. string.rep("\0", (#secs * 512) - #data)
-    for i, s in ipairs(secs) do
-        hw.invoke(boot_drive, "writeSector", s, padded:sub((i-1)*512+1, i*512))
-    end
+    for i, s in ipairs(secs) do hw.invoke(boot_drive, "writeSector", s, padded:sub((i-1)*512+1, i*512)) end
     index_dirty = true
 end
 
--- СТОЛП 2 & 4: CAPABILITY SECURITY + SHADOW
 local function create_cap(pid, uuid, ops, shadow_record)
     local record = shadow_record or { uuid=uuid, ops=ops, revoked=false }
     local cap = {
         id = uuid,
-        read = function()
-            if record.revoked then return nil, "Revoked" end
-            if not record.ops.read then return nil, "No read perm" end
-            return read_obj_raw(uuid)
-        end,
-        write = function(data)
-            if record.revoked then return nil, "Revoked" end
-            if not record.ops.write then return nil, "No write perm" end
-            write_obj_raw(uuid, data)
-            return true
-        end,
-        forget = function()
-            if record.revoked then return nil, "Revoked" end
-            if not record.ops.delete then return nil, "No del perm" end
+        read = function() if record.revoked or not record.ops.read then return nil end; return read_obj_raw(uuid) end,
+        write = function(data) if record.revoked or not record.ops.write then return false end; write_obj_raw(uuid, data); return true end,
+        forget = function() if record.revoked or not record.ops.delete then return false end
             local m = index[uuid]
-            if m then
-                for _, s in ipairs(m.sectors) do bitmap[s] = false end
-                index[uuid] = nil
-                index_dirty = true
-            end
+            if m then for _, s in ipairs(m.sectors) do bitmap[s] = false end; index[uuid] = nil; index_dirty = true; return true end
         end,
-        revoke = function() record.revoked = true end
+        revoke = function() record.revoked = true end,
+        re_tag = function(tags) if record.revoked or not record.ops.write then return false end; index[uuid].tags = tags; index_dirty = true; return true end,
+        get_tags = function() return index[uuid] and index[uuid].tags or {} end
     }
     table.insert(processes[pid].shadow_caps, record)
     return cap
 end
 
-local function spawn(code, name, parent_pid, args, shadow_caps)
-    local pid = pid_counter; pid_counter = pid_counter + 1
-    processes[pid] = { mailbox = {}, parent = parent_pid, name = name, shadow_caps = {}, is_critical = (name == "shell") }
-    
-    if shadow_caps then
-        for _, rec in ipairs(shadow_caps) do create_cap(pid, rec.uuid, rec.ops, rec) end
+local function do_idle_consolidation()
+    if index_dirty then
+        local s = "return " .. serialize({index=index, bitmap=bitmap})
+        s = s .. string.rep("\0", (128 * 512) - #s)
+        for i = 1, 128 do hw.invoke(boot_drive, "writeSector", i, s:sub((i-1)*512+1, i*512)) end
+        index_dirty = false; return true
     end
+    return false
+end
+
+local function spawn_internal(exe_cap, code, name, parent_pid, args, shadow_caps)
+    local pid = pid_counter; pid_counter = pid_counter + 1
+    
+    local is_system = false
+    local priv_names = {shell=true, update=true, rollback=true, errors=true}
+    local exe_name = name
+    if exe_cap and exe_cap.id and index[exe_cap.id] then
+        for _, t in ipairs(index[exe_cap.id].tags) do
+            if t == "system" or t == "shell" then is_system = true end
+            if t ~= "cmd" then exe_name = t end
+        end
+    end
+    if priv_names[exe_name] or name == "shell" then is_system = true end
+
+    processes[pid] = { mailbox = {}, parent = parent_pid, name = name, shadow_caps = {}, is_critical = (name == "shell"), crashes = 0 }
+    if shadow_caps then for _, rec in ipairs(shadow_caps) do create_cap(pid, rec.uuid, rec.ops, rec) end end
 
     local sys_api = {
         uptime = hw.uptime, print = tty_print, clear = function() if gpu then hw.invoke(gpu, "fill",1,1,w,h," ") cy=1 end end,
@@ -151,19 +135,17 @@ local function spawn(code, name, parent_pid, args, shadow_caps)
             local results = {}
             for id, meta in pairs(index) do
                 local match = true
-                for _, qtag in ipairs(query) do
-                    local found = false
-                    for _, t in ipairs(meta.tags) do if t == qtag then found=true; break end end
-                    if not found then match = false; break end
+                local is_uuid = (id:sub(1, #query[1]) == query[1])
+                if not is_uuid then
+                    for _, qtag in ipairs(query) do
+                        local found = false
+                        for _, t in ipairs(meta.tags) do if t == qtag then found=true; break end end
+                        if not found then match = false; break end
+                    end
                 end
-                if match then table.insert(results, {id = id, tags = meta.tags}) end
+                if match or is_uuid then table.insert(results, {id = id, tags = meta.tags}) end
             end
             return results
-        end,
-
-        request = function(uuid, ops)
-            -- ядро доверяет запросам (в v2 тут будет проверка ACL/Ownership)
-            return create_cap(pid, uuid, ops or {read=true})
         end,
 
         memorize = function(data, tags)
@@ -173,58 +155,64 @@ local function spawn(code, name, parent_pid, args, shadow_caps)
             return create_cap(pid, id, {read=true, write=true, delete=true})
         end,
 
-        spawn = function(cap, child_args)
-            local obj_code = cap.read()
-            if not obj_code then return nil, "Cannot read capability" end
-            return spawn(obj_code, "proc_"..string.sub(cap.id,1,4), pid, child_args)
+        spawn = function(child_exe_cap, child_args)
+            if type(child_exe_cap) ~= "table" or not child_exe_cap.read then return nil, "Expected capability" end
+            local c_code = child_exe_cap.read()
+            if not c_code then return nil, "Cannot read executable" end
+            return spawn_internal(child_exe_cap, c_code, "proc_"..string.sub(child_exe_cap.id,1,4), pid, child_args)
         end,
         
         wait = function(t_pid) processes[pid].waiting_for = t_pid; coroutine.yield("WAIT_CHILD") end,
         receive = function(timeout) return coroutine.yield("WAIT_MSG", timeout) end,
-        video = {
-            set = function(x, y, txt) if gpu then hw.invoke(gpu, "set", x, y, txt) end end,
-            res = function() return w, h end
-        }
+        video = { set = function(x, y, txt) if gpu then hw.invoke(gpu, "set", x, y, txt) end end, res = function() return w, h end }
     }
 
-    local safe_sys = setmetatable({}, { __index = sys_api, __newindex = function() error("SECURITY FAULT") end, __metatable = false })
-    local func, err = load(code, "="..name, "t", { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, load=load, unicode=unicode, sys=safe_sys, args=args or {} })
+    -- ИНЖЕКЦИЯ ПРИВИЛЕГИРОВАННЫХ ФУНКЦИЙ (Только для системных)
+    if is_system then
+        sys_api.request = function(uuid, ops) return create_cap(pid, uuid, ops or {read=true, write=true, delete=true}) end
+        sys_api.fetch = function(path)
+            local inet = hw.list("internet")()
+            if not inet then return "ERR: No internet" end
+            local handle = hw.invoke(inet, "request", "https://raw.githubusercontent.com/0pt1mist/Capacita/feature-raw-sectors/" .. path)
+            while true do
+                local ok, res = pcall(function() return handle.finishConnect() end)
+                if res == true then break elseif res == nil then return "ERR: Connect failed" end
+                coroutine.yield("WAIT_MSG", 0.05)
+            end
+            local result = ""
+            while true do
+                coroutine.yield("WAIT_MSG", 0.05)
+                local ok, chunk = pcall(function() return handle.read(4096) end)
+                if not ok then return "ERR: Read failed" end
+                if chunk == "" then elseif chunk then result = result .. chunk else break end
+            end
+            pcall(function() handle.close() end)
+            return result
+        end
+        sys_api.flash_bios = function(bcode) local eeprom = hw.list("eeprom")(); if eeprom then hw.invoke(eeprom, "set", bcode); return true end; return false end
+        sys_api.snapshot = function(tags) local s = "return " .. serialize({index=index, bitmap=bitmap}); local cap = sys_api.memorize(s, tags); return cap.id end
+        sys_api.restore = function(uuid)
+            local cap = create_cap(pid, uuid, {read=true})
+            local data = cap.read()
+            local ok, db_snap = pcall(function() return load(data, "=snap", "t", {})() end)
+            if ok and db_snap.index then index = db_snap.index; bitmap = db_snap.bitmap; index_dirty = true; do_idle_consolidation(); return true end
+            return false
+        end
+        sys_api.reboot = function() _G.computer.shutdown(true) end
+    end
+
+    local safe_sys = setmetatable({}, { __index = sys_api, __newindex = function() error("SEC_FAULT") end, __metatable = false })
+    local func, err = load(code, "="..name, "t", { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, type=type, load=load, unicode=unicode, sys=safe_sys, args=args or {} })
     
     if not func then tty_print("Crash: "..tostring(err)); return nil end
-    processes[pid].co = coroutine.create(func)
-    if parent_pid then active_pid = pid end
+    processes[pid].co = coroutine.create(func); if parent_pid then active_pid = pid end
     return pid
 end
 
-tty_print("CAPACITA KERNEL ONLINE.")
-
+tty_print("CAPACITA KERNEL ONLINE. CAPABILITY ENFORCED.")
 local shell_uuid
 for id, meta in pairs(index) do for _, t in ipairs(meta.tags) do if t == "shell" then shell_uuid = id end end end
-if not shell_uuid then error("KERNEL PANIC: NO SHELL") end
-
-local shell_code = read_obj_raw(shell_uuid)
-spawn(shell_code, "shell")
-
--- СТОЛП 5: IDLE CONSOLIDATION CYCLE
-local idle_iterator = nil
-local function do_idle_consolidation()
-    if index_dirty then
-        local s = "return " .. serialize({index=index, bitmap=bitmap})
-        s = s .. string.rep("\0", (128 * 512) - #s)
-        for i = 1, 128 do hw.invoke(boot_drive, "writeSector", i, s:sub((i-1)*512+1, i*512)) end
-        index_dirty = false
-        return
-    end
-
-    local prev, nexts = next(markov, idle_iterator)
-    idle_iterator = prev
-    if prev then
-        for n, weight in pairs(nexts) do
-            markov[prev][n] = weight * 0.95
-            if markov[prev][n] < 0.1 then markov[prev][n] = nil end
-        end
-    end
-end
+if shell_uuid then spawn_internal(create_cap(0, shell_uuid, {read=true}), read_obj_raw(shell_uuid), "shell") else error("NO SHELL") end
 
 while true do
     local e = {hw.pull(0.05)}
@@ -234,19 +222,19 @@ while true do
         if coroutine.status(proc.co) == "dead" then
             if active_pid == pid and proc.parent then active_pid = proc.parent end
             if proc.parent and processes[proc.parent] and processes[proc.parent].waiting_for == pid then
-                table.insert(processes[proc.parent].mailbox, {type = "child_exit"})
-                processes[proc.parent].waiting_for = nil
+                table.insert(processes[proc.parent].mailbox, {type = "child_exit"}); processes[proc.parent].waiting_for = nil
             end
             processes[pid] = nil
         else
             local resume_now, msg = false, nil
-            if #proc.mailbox > 0 and not proc.waiting_for then
-                msg = table.remove(proc.mailbox, 1); resume_now = true
-            elseif proc.timeout and hw.uptime() >= proc.timeout then
-                msg = {type = "timeout"}; resume_now = true; proc.timeout = nil
+            if #proc.mailbox > 0 and not proc.waiting_for then msg = table.remove(proc.mailbox, 1); resume_now = true
+            elseif proc.timeout and hw.uptime() >= proc.timeout then msg = {type = "timeout"}; resume_now = true; proc.timeout = nil
             elseif not proc.waiting_for and not proc.timeout then
                 msg = {type = "idle"}; resume_now = true
-                do_idle_consolidation() -- СТОЛП 5
+                if not do_idle_consolidation() then
+                    local p, n = next(markov, idle_iterator); idle_iterator = p
+                    if p then for nx, w in pairs(n) do markov[p][nx] = w * 0.95; if markov[p][nx] < 0.1 then markov[p][nx] = nil end end end
+                end
             end
             
             if resume_now then
@@ -254,8 +242,26 @@ while true do
                 if not ok then 
                     tty_print("PID " .. pid .. " KILLED: " .. tostring(y_reason))
                     if proc.is_critical then
-                        tty_print("IMMUNE RESPONSE: Restarting " .. proc.name .. " with shadow caps.")
-                        spawn(shell_code, proc.name, nil, nil, proc.shadow_caps)
+                        proc.crashes = proc.crashes + 1
+                        index["crash-"..hw.uptime()] = {tags={"updater_error","log"}, sectors=alloc_sectors(#y_reason), size=#y_reason}
+                        write_obj_raw("crash-"..hw.uptime(), "CRASH in " .. proc.name .. ": " .. tostring(y_reason))
+                        
+                        if proc.crashes >= 3 then
+                            tty_print("FATAL: Auto-rolling back...")
+                            local rbs = {}
+                            for id, m in pairs(index) do for _, t in ipairs(m.tags) do if t == "rollback_point" then table.insert(rbs, id) end end end
+                            if #rbs > 0 then
+                                local snap_b = ""
+                                for _, sec in ipairs(index[rbs[1]].sectors) do snap_b = snap_b .. hw.invoke(boot_drive, "readSector", sec) end
+                                local ok_s, db_s = pcall(function() return load(snap_b:sub(1, index[rbs[1]].size), "=s", "t", {})() end)
+                                if ok_s and db_s.index then index = db_s.index; bitmap = db_s.bitmap; index_dirty = true; do_idle_consolidation() end
+                                hw.pull(1); _G.computer.shutdown(true)
+                            else tty_print("NO ROLLBACK POINT. HALTED.") end
+                        else
+                            tty_print("IMMUNE RESPONSE: Restarting...")
+                            local npid = spawn_internal(create_cap(0, shell_uuid, {read=true}), read_obj_raw(shell_uuid), proc.name, nil, nil, proc.shadow_caps)
+                            if npid then processes[npid].crashes = proc.crashes end
+                        end
                     end
                 else
                     if y_reason == "WAIT_MSG" and type(t_val) == "number" then proc.timeout = hw.uptime() + t_val end

@@ -1,4 +1,4 @@
--- Capacita Shell v1.0.0
+-- Capacita Shell v1.1.0 (Capability Broker)
 sys.clear()
 local w, h = sys.video.res()
 local history = {}
@@ -35,27 +35,42 @@ local function readln(prompt)
     end
 end
 
-sys.print("---------------------------------")
-sys.print("CAPACITA SHELL v1.0 (SECURE)")
-sys.print("---------------------------------")
+sys.print("CAPACITA SHELL:")
 
-while true do
-    local input = readln("> ")
-    local args = {}
-    for word in input:gmatch("%S+") do table.insert(args, word) end
+local function execute(input)
+    local words = {}
+    for word in input:gmatch("%S+") do table.insert(words, word) end
+    if #words == 0 then return end
     
-    if #args > 0 then
-        local cmd_name = args[1]
-        table.remove(args, 1)
-        
-        -- Pillar 2: Сначала находим UUID, потом просим ядро дать Capability на запуск
-        local objs = sys.recall({"cmd", cmd_name})
-        if #objs == 0 then
-            sys.print("Command not found: " .. cmd_name)
+    local cmd_name = words[1]; table.remove(words, 1)
+    
+    local objs = sys.recall({"cmd", cmd_name})
+    if #objs == 0 then sys.print("Command not found: " .. cmd_name); return end
+
+    local exe_cap = sys.request(objs[1].id, {read=true})
+    
+    local passed_args = {}
+    for _, word in ipairs(words) do
+        if string.sub(word, 1, 1) == "@" then
+            local target = string.sub(word, 2)
+            local tobjs = sys.recall(target)
+            if #tobjs == 0 then 
+                sys.print("Object not found: " .. target); return 
+            elseif #tobjs > 1 then 
+                sys.print("Multiple matches for " .. target .. ". Be specific."); return 
+            else
+                local tcap = sys.request(tobjs[1].id, {read=true, write=true, delete=true})
+                table.insert(passed_args, tcap)
+            end
         else
-            local exe_cap = sys.request(objs[1].id, {read=true})
-            local pid = sys.spawn(exe_cap, args)
-            if pid then sys.wait(pid) end
+            table.insert(passed_args, word)
         end
     end
+    
+    local pid = sys.spawn(exe_cap, passed_args)
+    if pid then sys.wait(pid) end
+end
+
+while true do
+    execute(readln("> "))
 end
