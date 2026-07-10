@@ -1,57 +1,43 @@
--- Capacita BIOS v0.2.0
+-- Capacita BIOS v1.0.0 (Sector-based)
 local invoke = component.invoke
 local list = component.list
 
 local saved_addr = invoke(list("eeprom")(), "getData")
 local boot_addr = nil
-for addr in list("filesystem") do
-  if saved_addr and saved_addr ~= "" and addr:sub(1, #saved_addr) == saved_addr then
-    boot_addr = addr; break
-  end
+for addr in list("drive") do
+  if saved_addr and addr:sub(1, #saved_addr) == saved_addr then boot_addr = addr; break end
+end
+if not boot_addr then
+  for addr in list("drive") do boot_addr = addr; break end
 end
 if not boot_addr then error("BIOS: NO BOOT DRIVE") end
 
-local function read_obj(uuid)
-  local h = invoke(boot_addr, "open", uuid, "r")
-  if not h then return nil end
-  local b = ""
-  repeat
-    local c = invoke(boot_addr, "read", h, math.huge)
-    b = b .. (c or "")
-  until not c
-  invoke(boot_addr, "close", h)
-  return b
-end
+local idx_str = ""
+for i = 1, 128 do idx_str = idx_str .. (invoke(boot_addr, "readSector", i) or "") end
+local null_pos = idx_str:find("%z")
+if null_pos then idx_str = idx_str:sub(1, null_pos - 1) end
 
-local index_code = read_obj("index.db")
-if not index_code then error("BIOS: NO INDEX.DB") end
-local index_db = load(index_code, "=index", "t", {})()
+local db = load(idx_str, "=index", "t", {})()
+if type(db) ~= "table" or not db.index then error("BIOS: CORRUPTED INDEX") end
 
 local kernel_uuid
-for id, tags in pairs(index_db) do
-  for _, tag in ipairs(tags) do
+for id, meta in pairs(db.index) do
+  for _, tag in ipairs(meta.tags) do
     if tag == "boot" then kernel_uuid = id; break end
   end
 end
 if not kernel_uuid then error("BIOS: NO KERNEL TAG") end
 
-local kernel_code = read_obj(kernel_uuid)
-
-local ObjectStore = {
-  read = read_obj,
-  write = function(uuid, data)
-    local h = invoke(boot_addr, "open", uuid, "w")
-    invoke(boot_addr, "write", h, data)
-    invoke(boot_addr, "close", h)
-  end,
-  remove = function(uuid) invoke(boot_addr, "remove", uuid) end
-}
+local k_str = ""
+for _, sec in ipairs(db.index[kernel_uuid].sectors) do
+  k_str = k_str .. invoke(boot_addr, "readSector", sec)
+end
+k_str = k_str:sub(1, db.index[kernel_uuid].size)
 
 local safe_hw = { invoke=invoke, list=list, pull=computer.pullSignal, uptime=computer.uptime }
-
 _G.component = nil
 _G.computer = { shutdown = computer.shutdown } 
 
-local kernel, err = load(kernel_code, "=kernel", "t", _G)
+local kernel, err = load(k_str, "=kernel", "t", _G)
 if not kernel then error("KERNEL PANIC: " .. tostring(err)) end
-kernel(safe_hw, ObjectStore)
+kernel(safe_hw, boot_addr, db)

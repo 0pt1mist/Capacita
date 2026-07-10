@@ -1,28 +1,35 @@
--- Capacita Installer v0.5.0
+-- Capacita Installer v1.0.0 (Sector Builder)
 local component = require("component")
 local internet = require("internet")
-local fs = require("filesystem")
+local computer = require("computer")
 
 local REPO_URL = "https://raw.githubusercontent.com/0pt1mist/Capacita/dev/"
-local function uuid()
-    local t ='xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
-    return string.gsub(t, '[xy]', function (c)
-        local v = (c=='x') and math.random(0,0xf) or math.random(8,0xb)
-        return string.format('%x', v)
-    end)
-end
 
 local target_addr
-for addr in component.list("filesystem") do
-  if addr ~= fs.get("/").address and addr ~= component.eeprom.address and (not fs.get("/tmp") or addr ~= fs.get("/tmp").address) then target_addr = addr; break end
+for addr in component.list("drive") do
+  -- Не форматируем диск с которого загружен сам OpenOS!
+  if addr ~= computer.getBootAddress() and addr ~= component.eeprom.getData() then 
+      target_addr = addr; break 
+  end
 end
-if not target_addr then error("No target drive found!") end
+if not target_addr then error("No unmanaged target drive found!") end
 
 local function download(path)
-  local h = internet.request(REPO_URL .. path)
+  local h, err = internet.request(REPO_URL .. path)
+  if not h then error(err) end
   local d = ""
   for c in h do d = d .. c end
   return d
+end
+
+local function serialize(v)
+    if type(v) == "number" or type(v) == "boolean" then return tostring(v)
+    elseif type(v) == "string" then return string.format("%q", v)
+    elseif type(v) == "table" then
+        local t = {}
+        for k, val in pairs(v) do table.insert(t, "["..serialize(k).."]="..serialize(val)) end
+        return "{"..table.concat(t, ",").."}"
+    end
 end
 
 print("Fetching packages.index...")
@@ -33,24 +40,42 @@ print("Flashing BIOS...")
 component.eeprom.set(download(pkg_db.bios.path))
 component.eeprom.setData(target_addr)
 
-local mnt = "/mnt/capacita"
-fs.makeDirectory(mnt)
-fs.mount(target_addr, mnt)
-for file in fs.list(mnt) do fs.remove(mnt .. "/" .. file) end
+print("Formatting target drive (Sector mode)...")
+local db = { index = {}, bitmap = {} }
+local capacity = component.invoke(target_addr, "getCapacity") or 1048576
+local total_sectors = math.floor(capacity / 512)
 
-local index_str = "return {\n"
+-- Резервируем первые 128 секторов под индекс
+for i = 1, 128 do db.bitmap[i] = true end
+local current_sector = 129
+
 for pkg_name, info in pairs(pkg_db) do
     if pkg_name ~= "bios" then
         print("Installing " .. pkg_name .. "...")
         local code = download(info.path)
-        local id = uuid()
-        local f = io.open(mnt .. "/" .. id, "w"); f:write(code); f:close()
-        index_str = index_str .. "  ['"..id.."'] = {'" .. table.concat(info.tags, "','") .. "'},\n"
+        local id = "sys-" .. tostring(math.random(1000, 9999))
+        local secs = {}
+        
+        local chunks = math.ceil(#code / 512)
+        local padded = code .. string.rep("\0", (chunks * 512) - #code)
+        
+        for i = 1, chunks do
+            component.invoke(target_addr, "writeSector", current_sector, padded:sub((i-1)*512+1, i*512))
+            table.insert(secs, current_sector)
+            db.bitmap[current_sector] = true
+            current_sector = current_sector + 1
+        end
+        
+        db.index[id] = { tags = info.tags, sectors = secs, size = #code }
     end
 end
 
-local f = io.open(mnt .. "/index.db", "w"); f:write(index_str .. "}"); f:close()
-fs.umount(mnt)
+print("Writing Index DB to sectors 1-128...")
+local s = "return " .. serialize(db)
+s = s .. string.rep("\0", (128 * 512) - #s)
+for i = 1, 128 do
+    component.invoke(target_addr, "writeSector", i, s:sub((i-1)*512+1, i*512))
+end
 
 print("INSTALLATION COMPLETE. Rebooting...")
-require("computer").shutdown(true)
+computer.shutdown(true)
