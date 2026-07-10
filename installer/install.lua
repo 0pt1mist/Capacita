@@ -3,7 +3,7 @@ local component = require("component")
 local internet = require("internet")
 local computer = require("computer")
 
-local REPO_URL = "https://raw.githubusercontent.com/0pt1mist/Capacita/feature-raw-sectors/" -- ЗАМЕНИ НА СВОЮ ВЕТКУ!
+local REPO_URL = "https://raw.githubusercontent.com/0pt1mist/Capacita/feature-raw-sectors/"
 
 local target_addr
 for addr in component.list("drive") do

@@ -1,4 +1,4 @@
--- Capacita Microkernel v1.1.0 (Strict Capability Delegation)
+-- Capacita Microkernel v1.1.1
 local hw, boot_drive, db = ...
 local index, bitmap = db.index, db.bitmap
 
@@ -95,7 +95,11 @@ local function create_cap(pid, uuid, ops, shadow_record)
         re_tag = function(tags) if record.revoked or not record.ops.write then return false end; index[uuid].tags = tags; index_dirty = true; return true end,
         get_tags = function() return index[uuid] and index[uuid].tags or {} end
     }
-    table.insert(processes[pid].shadow_caps, record)
+    
+    if processes[pid] then
+        table.insert(processes[pid].shadow_caps, record)
+    end
+    
     return cap
 end
 
