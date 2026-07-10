@@ -1,18 +1,31 @@
--- Capacita Installer v1.0.0 (Sector Builder)
+-- Capacita Installer v1.0.2
 local component = require("component")
 local internet = require("internet")
 local computer = require("computer")
 
-local REPO_URL = "https://raw.githubusercontent.com/0pt1mist/Capacita/dev/"
+local REPO_URL = "https://raw.githubusercontent.com/0pt1mist/Capacita/feature-raw-sectors/" -- ЗАМЕНИ НА СВОЮ ВЕТКУ!
 
 local target_addr
 for addr in component.list("drive") do
-  -- Не форматируем диск с которого загружен сам OpenOS!
   if addr ~= computer.getBootAddress() and addr ~= component.eeprom.getData() then 
       target_addr = addr; break 
   end
 end
-if not target_addr then error("No unmanaged target drive found!") end
+
+if not target_addr then 
+    print("-----------------------------------")
+    print("FATAL ERROR: No UNMANAGED drive found!")
+    print("-----------------------------------")
+    print("Capacita OS requires a RAW (Unmanaged) disk.")
+    print("Your Tier 2 disk is likely still in Managed (filesystem) mode.")
+    print("\nHOW TO FIX:")
+    print("1. Take the Tier 2 disk OUT of the computer.")
+    print("2. Hold it in your hand and Right-Click in the air.")
+    print("3. Select 'Unmanaged mode' (WARNING: this wipes it).")
+    print("4. Put it back into the computer and run this installer again.")
+    print("-----------------------------------")
+    error("Installation aborted.")
+end
 
 local function download(path)
   local h, err = internet.request(REPO_URL .. path)
@@ -45,7 +58,6 @@ local db = { index = {}, bitmap = {} }
 local capacity = component.invoke(target_addr, "getCapacity") or 1048576
 local total_sectors = math.floor(capacity / 512)
 
--- Резервируем первые 128 секторов под индекс
 for i = 1, 128 do db.bitmap[i] = true end
 local current_sector = 129
 
@@ -65,7 +77,6 @@ for pkg_name, info in pairs(pkg_db) do
             db.bitmap[current_sector] = true
             current_sector = current_sector + 1
         end
-        
         db.index[id] = { tags = info.tags, sectors = secs, size = #code }
     end
 end

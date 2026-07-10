@@ -1,19 +1,31 @@
--- Capacita BIOS v1.0.0 (Sector-based)
+-- Capacita BIOS v1.0.2 (Debug & Anti-lag)
 local invoke = component.invoke
 local list = component.list
 
+computer.pullSignal(0.1)
+
 local saved_addr = invoke(list("eeprom")(), "getData")
 local boot_addr = nil
+
 for addr in list("drive") do
   if saved_addr and addr:sub(1, #saved_addr) == saved_addr then boot_addr = addr; break end
 end
 if not boot_addr then
   for addr in list("drive") do boot_addr = addr; break end
 end
-if not boot_addr then error("BIOS: NO BOOT DRIVE") end
+
+if not boot_addr then 
+  local msg = "NO BOOT DRIVE. Found: "
+  for a, t in list() do msg = msg .. t .. " " end
+  error(msg)
+end
 
 local idx_str = ""
-for i = 1, 128 do idx_str = idx_str .. (invoke(boot_addr, "readSector", i) or "") end
+for i = 1, 128 do 
+  local sec = invoke(boot_addr, "readSector", i)
+  if not sec then error("BIOS: ERR READING SECTOR " .. i) end
+  idx_str = idx_str .. sec 
+end
 local null_pos = idx_str:find("%z")
 if null_pos then idx_str = idx_str:sub(1, null_pos - 1) end
 
