@@ -1,14 +1,17 @@
-if #args == 0 then sys.print("Usage: update <all | pkg1,pkg2>"); return end
+if #args == 0 then sys.print("Usage: update <all | pkg1,pkg2> [confirm]"); return end
 sys.print("Syncing packages.index...")
 local idx_str = sys.fetch("packages.index")
 if string.sub(idx_str, 1, 3) == "ERR" then sys.print("Sync failed: " .. idx_str); return end
 
 local pkg_db = load(idx_str, "=pkg", "t", {})()
-local targets = {}
-if args[1] == "all" then for k, _ in pairs(pkg_db) do targets[k] = true end
-else
-    for w in string.gmatch(table.concat(args, ""), "[^,]+") do
-        if pkg_db[w] then targets[w] = true else sys.print("Unknown package: " .. w) end
+local targets, confirmed = {}, false
+for _, a in ipairs(args) do
+    if a == "confirm" then confirmed = true
+    elseif a == "all" then for k, _ in pairs(pkg_db) do targets[k] = true end
+    else
+        for w in string.gmatch(a, "[^,]+") do
+            if pkg_db[w] then targets[w] = true else sys.print("Unknown package: " .. w) end
+        end
     end
 end
 
@@ -21,23 +24,39 @@ for k, _ in pairs(targets) do
 end
 
 if count == 0 then sys.print("Nothing to update."); return end
-sys.print("Applying updates...")
-if updates.bios then sys.flash_bios(updates.bios); updates.bios = nil end
+
+if updates.bios then
+    if not confirmed then
+        sys.print("BIOS update needs confirmation. Re-run: update " .. table.concat(args, ",") .. ",confirm")
+        updates.bios = nil; count = count - 1
+    elseif #updates.bios < 256 then
+        sys.print("Refusing to flash BIOS: fetched data looks truncated (" .. #updates.bios .. " bytes).")
+        updates.bios = nil; count = count - 1
+    else
+        sys.print("Flashing BIOS (confirmed)...")
+        sys.flash_bios(updates.bios)
+        updates.bios = nil
+    end
+    if count == 0 then sys.print("Nothing left to update."); return end
+end
 
 sys.print("Creating system snapshot...")
+local old_rollbacks = sys.recall("rollback_point")
+for _, obj in ipairs(old_rollbacks) do
+    local cap = sys.request(obj.id, {delete = true})
+    cap.forget()
+end
 sys.snapshot({"system", "rollback_point"})
 
 local needs_reboot = false
 for pkg_name, code in pairs(updates) do
     local p_tags = pkg_db[pkg_name].tags
-    for _, pt in ipairs(p_tags) do
-        local old_objs = sys.recall(pt)
-        for _, obj in ipairs(old_objs) do
-            local cap = sys.request(obj.id, {write=true})
-            local updated_tags = {}
-            for _, t in ipairs(cap.get_tags()) do table.insert(updated_tags, "old_" .. t) end
-            cap.re_tag(updated_tags)
-        end
+    local old_objs = sys.recall(p_tags)
+    for _, obj in ipairs(old_objs) do
+        local cap = sys.request(obj.id, {write=true})
+        local updated_tags = {}
+        for _, t in ipairs(cap.get_tags()) do table.insert(updated_tags, "old_" .. t) end
+        cap.re_tag(updated_tags)
     end
     sys.memorize(code, p_tags)
     if pkg_name == "kernel" or pkg_name == "shell" then needs_reboot = true end

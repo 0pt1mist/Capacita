@@ -1,12 +1,26 @@
--- Capacita Microkernel v1.1.1
+-- Capacita Microkernel v1.2.0 (Security & Integrity Fixes)
 local hw, boot_drive, db = ...
 local index, bitmap = db.index, db.bitmap
+local system_uuids = db.system_uuids or {}
+local kernel_id = db.kernel_id
+
+local system_uuid_set = {}
+for _, id in pairs(system_uuids) do system_uuid_set[id] = true end
 
 local markov, ram_cache, cache_order = {}, {}, {}
 local CACHE_MAX = 5
 local last_accessed_uuid = nil
 local index_dirty = false
 local processes, pid_counter, active_pid = {}, 1, 1
+local idle_iterator = nil 
+
+math.randomseed(os.time())
+local boot_salt = tostring(os.time()) .. "-" .. tostring(math.random(100000, 999999))
+local id_counter = 0
+local function new_id()
+    id_counter = id_counter + 1
+    return boot_salt .. "-" .. id_counter
+end
 
 local gpu, screen = hw.list("gpu")(), hw.list("screen")()
 if gpu and screen then hw.invoke(gpu, "bind", screen) end
@@ -56,7 +70,7 @@ local function read_obj_raw(uuid)
 
     if markov[uuid] then
         local best_next, best_w = nil, 0
-        for n, w in pairs(markov[uuid]) do if w > best_w then best_next=n; best_w=w end end
+        for n, wt in pairs(markov[uuid]) do if wt > best_w then best_next=n; best_w=wt end end
         if best_next and best_w >= 2.0 and not ram_cache[best_next] then
             local pmeta = index[best_next]
             if pmeta then
@@ -95,17 +109,21 @@ local function create_cap(pid, uuid, ops, shadow_record)
         re_tag = function(tags) if record.revoked or not record.ops.write then return false end; index[uuid].tags = tags; index_dirty = true; return true end,
         get_tags = function() return index[uuid] and index[uuid].tags or {} end
     }
-    
+
     if processes[pid] then
         table.insert(processes[pid].shadow_caps, record)
     end
-    
+
     return cap
 end
 
 local function do_idle_consolidation()
     if index_dirty then
-        local s = "return " .. serialize({index=index, bitmap=bitmap})
+        local s = "return " .. serialize({index=index, bitmap=bitmap, system_uuids=system_uuids, kernel_id=kernel_id})
+        if #s > 128 * 512 then
+            tty_print("WARN: boot index too large to persist (" .. #s .. " bytes) - changes since last save are unsaved!")
+            return false
+        end
         s = s .. string.rep("\0", (128 * 512) - #s)
         for i = 1, 128 do hw.invoke(boot_drive, "writeSector", i, s:sub((i-1)*512+1, i*512)) end
         index_dirty = false; return true
@@ -115,25 +133,17 @@ end
 
 local function spawn_internal(exe_cap, code, name, parent_pid, args, shadow_caps)
     local pid = pid_counter; pid_counter = pid_counter + 1
-    
-    local is_system = false
-    local priv_names = {shell=true, update=true, rollback=true, errors=true}
-    local exe_name = name
-    if exe_cap and exe_cap.id and index[exe_cap.id] then
-        for _, t in ipairs(index[exe_cap.id].tags) do
-            if t == "system" or t == "shell" then is_system = true end
-            if t ~= "cmd" then exe_name = t end
-        end
-    end
-    if priv_names[exe_name] or name == "shell" then is_system = true end
 
-    processes[pid] = { mailbox = {}, parent = parent_pid, name = name, shadow_caps = {}, is_critical = (name == "shell"), crashes = 0 }
+    local is_system = exe_cap and exe_cap.id and system_uuid_set[exe_cap.id] == true
+    local is_shell = exe_cap and exe_cap.id and exe_cap.id == system_uuids.shell
+
+    processes[pid] = { mailbox = {}, parent = parent_pid, name = name, shadow_caps = {}, is_critical = is_shell, crashes = 0 }
     if shadow_caps then for _, rec in ipairs(shadow_caps) do create_cap(pid, rec.uuid, rec.ops, rec) end end
 
     local sys_api = {
         uptime = hw.uptime, print = tty_print, clear = function() if gpu then hw.invoke(gpu, "fill",1,1,w,h," ") cy=1 end end,
         get_cy = function() return cy end, set_cy = function(y) cy = y end,
-        
+
         recall = function(query)
             if type(query) == "string" then query = {query} end
             local results = {}
@@ -153,7 +163,7 @@ local function spawn_internal(exe_cap, code, name, parent_pid, args, shadow_caps
         end,
 
         memorize = function(data, tags)
-            local id = tostring(math.floor(hw.uptime()*1000)) .. "-" .. tostring(math.random(1000,9999))
+            local id = new_id()
             index[id] = { tags = tags, sectors = {}, size = 0 }
             write_obj_raw(id, data)
             return create_cap(pid, id, {read=true, write=true, delete=true})
@@ -165,7 +175,7 @@ local function spawn_internal(exe_cap, code, name, parent_pid, args, shadow_caps
             if not c_code then return nil, "Cannot read executable" end
             return spawn_internal(child_exe_cap, c_code, "proc_"..string.sub(child_exe_cap.id,1,4), pid, child_args)
         end,
-        
+
         wait = function(t_pid) processes[pid].waiting_for = t_pid; coroutine.yield("WAIT_CHILD") end,
         receive = function(timeout) return coroutine.yield("WAIT_MSG", timeout) end,
         video = { set = function(x, y, txt) if gpu then hw.invoke(gpu, "set", x, y, txt) end end, res = function() return w, h end }
@@ -194,7 +204,7 @@ local function spawn_internal(exe_cap, code, name, parent_pid, args, shadow_caps
             return result
         end
         sys_api.flash_bios = function(bcode) local eeprom = hw.list("eeprom")(); if eeprom then hw.invoke(eeprom, "set", bcode); return true end; return false end
-        sys_api.snapshot = function(tags) local s = "return " .. serialize({index=index, bitmap=bitmap}); local cap = sys_api.memorize(s, tags); return cap.id end
+        sys_api.snapshot = function(tags) local s = "return " .. serialize({index=index, bitmap=bitmap, system_uuids=system_uuids, kernel_id=kernel_id}); local cap = sys_api.memorize(s, tags); return cap.id end
         sys_api.restore = function(uuid)
             local cap = create_cap(pid, uuid, {read=true})
             local data = cap.read()
@@ -205,18 +215,37 @@ local function spawn_internal(exe_cap, code, name, parent_pid, args, shadow_caps
         sys_api.reboot = function() _G.computer.shutdown(true) end
     end
 
+    -- SECURITY FIX: build the process's restricted environment as a named
+    -- table FIRST, then hand it a wrapped `load` that defaults to ITSELF.
+    -- Lua's real `load(chunk)` (no 4th arg) falls back to the single
+    -- VM-global environment -- which, in this kernel, is the exact same
+    -- `_G` the kernel itself runs under (see bios.lua's `load(k_str,
+    -- "=kernel", "t", _G)`). Handing the raw builtin to sandboxed process
+    -- code meant any process could do `load("return _G")()` and read/write
+    -- globals the kernel itself depends on -- a full sandbox escape and a
+    -- way for one crashing/misbehaving process to corrupt every other
+    -- process (and the kernel), which is exactly what "isolated actors"
+    -- (Pillar 4) is supposed to prevent.
     local safe_sys = setmetatable({}, { __index = sys_api, __newindex = function() error("SEC_FAULT") end, __metatable = false })
-    local func, err = load(code, "="..name, "t", { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, type=type, load=load, unicode=unicode, sys=safe_sys, args=args or {} })
-    
+    local proc_env = { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, type=type, unicode=unicode, sys=safe_sys, args=args or {} }
+    proc_env.load = function(chunk, chunkname, mode, env)
+        return load(chunk, chunkname, mode, env or proc_env)
+    end
+
+    local func, err = load(code, "="..name, "t", proc_env)
+
     if not func then tty_print("Crash: "..tostring(err)); return nil end
     processes[pid].co = coroutine.create(func); if parent_pid then active_pid = pid end
     return pid
 end
 
 tty_print("CAPACITA KERNEL ONLINE. CAPABILITY ENFORCED.")
-local shell_uuid
-for id, meta in pairs(index) do for _, t in ipairs(meta.tags) do if t == "shell" then shell_uuid = id end end end
-if shell_uuid then spawn_internal(create_cap(0, shell_uuid, {read=true}), read_obj_raw(shell_uuid), "shell") else error("NO SHELL") end
+local shell_uuid = system_uuids.shell
+if shell_uuid and index[shell_uuid] then
+    spawn_internal(create_cap(0, shell_uuid, {read=true}), read_obj_raw(shell_uuid), "shell")
+else
+    error("NO SHELL (db.system_uuids.shell missing or its sectors not found -- reinstall)")
+end
 
 while true do
     local e = {hw.pull(0.05)}
@@ -237,19 +266,21 @@ while true do
                 msg = {type = "idle"}; resume_now = true
                 if not do_idle_consolidation() then
                     local p, n = next(markov, idle_iterator); idle_iterator = p
-                    if p then for nx, w in pairs(n) do markov[p][nx] = w * 0.95; if markov[p][nx] < 0.1 then markov[p][nx] = nil end end end
+                    if p then for nx, wt in pairs(n) do n[nx] = wt * 0.95; if n[nx] < 0.1 then n[nx] = nil end end end
                 end
             end
-            
+
             if resume_now then
                 local ok, y_reason, t_val = coroutine.resume(proc.co, msg)
-                if not ok then 
+                if not ok then
                     tty_print("PID " .. pid .. " KILLED: " .. tostring(y_reason))
                     if proc.is_critical then
                         proc.crashes = proc.crashes + 1
-                        index["crash-"..hw.uptime()] = {tags={"updater_error","log"}, sectors=alloc_sectors(#y_reason), size=#y_reason}
-                        write_obj_raw("crash-"..hw.uptime(), "CRASH in " .. proc.name .. ": " .. tostring(y_reason))
-                        
+                        local crash_id = new_id()
+                        local crash_msg = "CRASH in " .. proc.name .. ": " .. tostring(y_reason)
+                        index[crash_id] = { tags = {"updater_error", "log"}, sectors = {}, size = 0 }
+                        write_obj_raw(crash_id, crash_msg)
+
                         if proc.crashes >= 3 then
                             tty_print("FATAL: Auto-rolling back...")
                             local rbs = {}
