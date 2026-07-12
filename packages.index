@@ -4,6 +4,7 @@ return {
     shell  = { path = "src/system/shell.lua",  tags = {"system", "shell"}, system = true },
     help   = { path = "src/cmds/help.lua",     tags = {"cmd", "help"} },
     echo   = { path = "src/cmds/echo.lua",     tags = {"cmd", "echo"} },
+    clear  = { path = "src/cmds/clear.lua",    tags = {"cmd", "clear"} },
     mkobj  = { path = "src/cmds/mkobj.lua",    tags = {"cmd", "mkobj"} },
     rm     = { path = "src/cmds/rm.lua",       tags = {"cmd", "rm"} },
     tag    = { path = "src/cmds/tag.lua",      tags = {"cmd", "tag"} },

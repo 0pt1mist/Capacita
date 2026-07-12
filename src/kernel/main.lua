@@ -1,4 +1,4 @@
--- Capacita Microkernel v1.2.0 (Security & Integrity Fixes)
+-- Capacita Microkernel v1.3.0 (Security, Integrity & Display Fixes)
 local hw, boot_drive, db = ...
 local index, bitmap = db.index, db.bitmap
 local system_uuids = db.system_uuids or {}
@@ -12,7 +12,8 @@ local CACHE_MAX = 5
 local last_accessed_uuid = nil
 local index_dirty = false
 local processes, pid_counter, active_pid = {}, 1, 1
-local idle_iterator = nil 
+local idle_iterator = nil
+local last_flush = 0
 
 math.randomseed(os.time())
 local boot_salt = tostring(os.time()) .. "-" .. tostring(math.random(100000, 999999))
@@ -29,7 +30,9 @@ local cy = 1
 
 local function tty_print(txt)
     if not gpu then return end
-    hw.invoke(gpu, "set", 1, cy, tostring(txt))
+    local s = tostring(txt)
+    if #s < w then s = s .. string.rep(" ", w - #s) end
+    hw.invoke(gpu, "set", 1, cy, s)
     cy = cy + 1
     if cy > h then hw.invoke(gpu, "copy", 1, 2, w, h - 1, 0, -1); hw.invoke(gpu, "fill", 1, h, w, 1, " "); cy = h end
 end
@@ -181,7 +184,7 @@ local function spawn_internal(exe_cap, code, name, parent_pid, args, shadow_caps
         video = { set = function(x, y, txt) if gpu then hw.invoke(gpu, "set", x, y, txt) end end, res = function() return w, h end }
     }
 
-    -- ИНЖЕКЦИЯ ПРИВИЛЕГИРОВАННЫХ ФУНКЦИЙ (Только для системных)
+
     if is_system then
         sys_api.request = function(uuid, ops) return create_cap(pid, uuid, ops or {read=true, write=true, delete=true}) end
         sys_api.fetch = function(path)
@@ -215,17 +218,6 @@ local function spawn_internal(exe_cap, code, name, parent_pid, args, shadow_caps
         sys_api.reboot = function() _G.computer.shutdown(true) end
     end
 
-    -- SECURITY FIX: build the process's restricted environment as a named
-    -- table FIRST, then hand it a wrapped `load` that defaults to ITSELF.
-    -- Lua's real `load(chunk)` (no 4th arg) falls back to the single
-    -- VM-global environment -- which, in this kernel, is the exact same
-    -- `_G` the kernel itself runs under (see bios.lua's `load(k_str,
-    -- "=kernel", "t", _G)`). Handing the raw builtin to sandboxed process
-    -- code meant any process could do `load("return _G")()` and read/write
-    -- globals the kernel itself depends on -- a full sandbox escape and a
-    -- way for one crashing/misbehaving process to corrupt every other
-    -- process (and the kernel), which is exactly what "isolated actors"
-    -- (Pillar 4) is supposed to prevent.
     local safe_sys = setmetatable({}, { __index = sys_api, __newindex = function() error("SEC_FAULT") end, __metatable = false })
     local proc_env = { string=string, table=table, math=math, tostring=tostring, tonumber=tonumber, ipairs=ipairs, pairs=pairs, type=type, unicode=unicode, sys=safe_sys, args=args or {} }
     proc_env.load = function(chunk, chunkname, mode, env)
@@ -251,6 +243,11 @@ while true do
     local e = {hw.pull(0.05)}
     if e[1] and processes[active_pid] then table.insert(processes[active_pid].mailbox, {type = "hw", data = e}) end
 
+    if hw.uptime() - last_flush > 3 then
+        do_idle_consolidation()
+        last_flush = hw.uptime()
+    end
+
     for pid, proc in pairs(processes) do
         if coroutine.status(proc.co) == "dead" then
             if active_pid == pid and proc.parent then active_pid = proc.parent end
@@ -264,10 +261,8 @@ while true do
             elseif proc.timeout and hw.uptime() >= proc.timeout then msg = {type = "timeout"}; resume_now = true; proc.timeout = nil
             elseif not proc.waiting_for and not proc.timeout then
                 msg = {type = "idle"}; resume_now = true
-                if not do_idle_consolidation() then
-                    local p, n = next(markov, idle_iterator); idle_iterator = p
-                    if p then for nx, wt in pairs(n) do n[nx] = wt * 0.95; if n[nx] < 0.1 then n[nx] = nil end end end
-                end
+                local p, n = next(markov, idle_iterator); idle_iterator = p
+                if p then for nx, wt in pairs(n) do n[nx] = wt * 0.95; if n[nx] < 0.1 then n[nx] = nil end end end
             end
 
             if resume_now then
