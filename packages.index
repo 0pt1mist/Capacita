@@ -7,6 +7,7 @@ return {
     clear  = { path = "src/cmds/clear.lua",    tags = {"cmd", "clear"} },
     mkobj  = { path = "src/cmds/mkobj.lua",    tags = {"cmd", "mkobj"} },
     rm     = { path = "src/cmds/rm.lua",       tags = {"cmd", "rm"} },
+    ls     = { path = "src/cmds/ls.lua",       tags = {"cmd", "ls"} },
     tag    = { path = "src/cmds/tag.lua",      tags = {"cmd", "tag"} },
     nano   = { path = "src/cmds/nano.lua",     tags = {"cmd", "nano"} },
     update = { path = "src/cmds/update.lua",   tags = {"cmd", "update"}, system = true },
